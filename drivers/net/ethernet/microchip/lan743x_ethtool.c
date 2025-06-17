@@ -1398,6 +1398,7 @@ const struct ethtool_ops lan743x_ethtool_ops = {
 	.get_regs = lan743x_get_regs,
 	.get_pauseparam = lan743x_get_pauseparam,
 	.set_pauseparam = lan743x_set_pauseparam,
+	.nway_reset		= phy_ethtool_nway_reset,
 #ifdef CONFIG_PM
 	.get_wol = lan743x_ethtool_get_wol,
 	.set_wol = lan743x_ethtool_set_wol,

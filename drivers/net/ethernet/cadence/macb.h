@@ -78,6 +78,8 @@
 #define MACB_TBQPH		0x04C8
 #define MACB_RBQPH		0x04D4
 
+#define MACB_NCR_LPIEN   BIT(19)  // From Microchip doc
+
 /* GEM register offsets. */
 #define GEM_NCR			0x0000 /* Network Control */
 #define GEM_NCFGR		0x0004 /* Network Config */
@@ -176,6 +178,10 @@
 #define GEM_PCSANNPTX		0x021c /* PCS AN Next Page TX */
 #define GEM_PCSANNPLP		0x0220 /* PCS AN Next Page LP */
 #define GEM_PCSANEXTSTS		0x023c /* PCS AN Extended Status */
+#define GEM_RXLPI			0x0270 /* EEE RX LPI Transitions */
+#define GEM_RXLPITIME		0x0274 /* EEE RX LPI Time */
+#define GEM_TXLPI			0x0278 /* EEE TX LPI Transitions */
+#define GEM_TXLPITIME		0x027c /* EEE TX LPI Time */
 #define GEM_DCFG1		0x0280 /* Design Config 1 */
 #define GEM_DCFG2		0x0284 /* Design Config 2 */
 #define GEM_DCFG3		0x0288 /* Design Config 3 */

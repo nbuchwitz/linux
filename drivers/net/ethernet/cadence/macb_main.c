@@ -656,6 +656,28 @@ static const struct phylink_pcs_ops macb_phylink_pcs_ops = {
 	.pcs_config = macb_pcs_config,
 };
 
+static int macb_mac_eee_enable(struct macb *bp, bool enable)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&bp->lock, flags);
+
+	u32 ncr = macb_readl(bp, NCR);
+	if (enable) {
+		pr_warn("Enabling EEE via NCR LPIEN bit\n");
+		ncr |= MACB_NCR_LPIEN;
+	} else {
+		pr_warn("Disabling EEE (clearing LPIEN bit)\n");
+		ncr &= ~MACB_NCR_LPIEN;
+	}
+	macb_writel(bp, NCR, ncr);
+
+	u32 readback = macb_readl(bp, NCR);
+	pr_warn("NCR after EEE set: 0x%08x\n", readback);
+
+	spin_unlock_irqrestore(&bp->lock, flags);
+	return 0;
+}
+
 static void macb_mac_config(struct phylink_config *config, unsigned int mode,
 			    const struct phylink_link_state *state)
 {
@@ -747,6 +769,7 @@ static void macb_mac_link_up(struct phylink_config *config,
 	unsigned long flags;
 	unsigned int q;
 	u32 ctrl;
+	bool active;
 
 	spin_lock_irqsave(&bp->lock, flags);
 
@@ -799,6 +822,12 @@ static void macb_mac_link_up(struct phylink_config *config,
 	macb_writel(bp, NCR, ctrl | MACB_BIT(RE) | MACB_BIT(TE));
 
 	netif_tx_wake_all_queues(ndev);
+
+	// reset txlpien =  TODO?
+	macb_mac_eee_enable(bp, false);
+	active = phy_init_eee(ndev->phydev, 0) >= 0;
+	netdev_info(ndev, "eee active=%d enable_tx_lpi=%d\n", active, ndev->phydev->enable_tx_lpi);
+	//macb_mac_eee_enable(bp, active && ndev->phydev->enable_tx_lpi);
 }
 
 static struct phylink_pcs *macb_mac_select_pcs(struct phylink_config *config,
@@ -815,11 +844,42 @@ static struct phylink_pcs *macb_mac_select_pcs(struct phylink_config *config,
 		return NULL;
 }
 
+static void macb_mac_disable_tx_lpi(struct phylink_config *config)
+{
+	struct net_device *ndev = to_net_dev(config->dev);
+	struct macb *bp = netdev_priv(ndev);
+
+	macb_mac_eee_enable(bp, false);
+}
+
+static int macb_mac_enable_tx_lpi(struct phylink_config *config, u32 timer,
+				     bool tx_clk_stop)
+{
+	struct net_device *ndev = to_net_dev(config->dev);
+	struct macb *bp = netdev_priv(ndev);
+	int ret;
+
+	// TODO: to stuff
+
+	ret = macb_mac_eee_enable(bp, true);
+	if (ret < 0)
+		goto tx_lpi_fail;
+
+	return 0;
+
+tx_lpi_fail:
+	netdev_err(ndev, "Failed to enable TX LPI with error %pe\n",
+		ERR_PTR(ret));
+	return ret;
+}
+
 static const struct phylink_mac_ops macb_phylink_ops = {
 	.mac_select_pcs = macb_mac_select_pcs,
 	.mac_config = macb_mac_config,
 	.mac_link_down = macb_mac_link_down,
 	.mac_link_up = macb_mac_link_up,
+	//.mac_disable_tx_lpi = macb_mac_disable_tx_lpi,
+	//.mac_enable_tx_lpi = macb_mac_enable_tx_lpi,
 };
 
 static bool macb_phy_handle_exists(struct device_node *dn)
@@ -3064,6 +3124,8 @@ static int macb_open(struct net_device *dev)
 	if (err)
 		goto phy_off;
 
+	phy_support_eee(dev->phydev);
+
 	netif_tx_start_all_queues(dev);
 
 	if (bp->ptp_info)
@@ -3497,6 +3559,42 @@ static int macb_set_ringparam(struct net_device *netdev,
 	return 0;
 }
 
+static int macb_get_eee(struct net_device *ndev, struct ethtool_keee *edata)
+{
+	struct macb *bp = netdev_priv(ndev);
+	return phylink_ethtool_get_eee(bp->phylink, edata);
+}
+
+static int macb_set_eee(struct net_device *ndev,
+			struct ethtool_keee *edata)
+{
+	struct macb *bp = netdev_priv(ndev);
+	macb_mac_eee_enable(bp, edata->tx_lpi_enabled && edata->eee_enabled);
+	return phylink_ethtool_set_eee(bp->phylink, edata);
+	
+	/*bool active;
+	u32 ncr = macb_readl(priv, NCR);
+
+	priv->eee_enabled = edata->eee_enabled;
+
+	if (edata->eee_enabled) {
+		netdev_info(dev, "Enabling EEE via NCR LPIEN bit\n");
+		ncr |= MACB_NCR_LPIEN;
+		active = phy_init_eee(dev->phydev, false) >= 0;
+	} else {
+		netdev_info(dev, "Disabling EEE (clearing LPIEN bit)\n");
+		ncr &= ~MACB_NCR_LPIEN;
+	}
+
+	macb_writel(priv, NCR, ncr);
+
+	u32 readback = macb_readl(priv, NCR);
+	netdev_info(dev, "NCR after EEE set: 0x%08x\n", readback);
+
+	return phy_ethtool_set_eee(dev->phydev, edata);*/
+}
+
+
 #ifdef CONFIG_MACB_USE_HWSTAMP
 static unsigned int gem_get_tsu_rate(struct macb *bp)
 {
@@ -3890,6 +3988,9 @@ static const struct ethtool_ops macb_ethtool_ops = {
 	.set_link_ksettings     = macb_set_link_ksettings,
 	.get_ringparam		= macb_get_ringparam,
 	.set_ringparam		= macb_set_ringparam,
+	.get_eee		= macb_get_eee,
+	.set_eee		= macb_set_eee,
+	.nway_reset		= phy_ethtool_nway_reset,
 };
 
 static const struct ethtool_ops gem_ethtool_ops = {
@@ -3912,6 +4013,9 @@ static const struct ethtool_ops gem_ethtool_ops = {
 	.set_ringparam		= macb_set_ringparam,
 	.get_rxnfc			= gem_get_rxnfc,
 	.set_rxnfc			= gem_set_rxnfc,
+	.get_eee		= macb_get_eee,
+	.set_eee		= macb_set_eee,
+	.nway_reset		= phy_ethtool_nway_reset,
 };
 
 static int macb_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)

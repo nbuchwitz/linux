@@ -1506,6 +1506,9 @@ int genphy_c45_eee_is_active(struct phy_device *phydev, unsigned long *adv,
 	if (is_enabled)
 		*is_enabled = eee_enabled;
 
+	pr_warn("genphy_c45_eee_is_active: enabled %d active %d\n",
+		eee_enabled, eee_active);
+
 	return eee_active;
 }
 EXPORT_SYMBOL(genphy_c45_eee_is_active);
@@ -1557,6 +1560,8 @@ int genphy_c45_ethtool_set_eee(struct phy_device *phydev,
 			       struct ethtool_keee *data)
 {
 	int ret;
+
+	pr_warn("genphy_c45_ethtool_set_eee: eee_enabled %d\n", data->eee_enabled);
 
 	if (data->eee_enabled) {
 		unsigned long *adv = data->advertised;

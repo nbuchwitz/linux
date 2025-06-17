@@ -375,6 +375,7 @@ int bcm_phy_set_eee(struct phy_device *phydev, bool enable)
 
 	/* Enable EEE at PHY level */
 	val = phy_read_mmd(phydev, MDIO_MMD_AN, BRCM_CL45VEN_EEE_CONTROL);
+	pr_warn("eee_control=%d (before)", val);
 	if (val < 0)
 		return val;
 
@@ -384,6 +385,7 @@ int bcm_phy_set_eee(struct phy_device *phydev, bool enable)
 		val &= ~(LPI_FEATURE_EN | LPI_FEATURE_EN_DIG1000X);
 
 	phy_write_mmd(phydev, MDIO_MMD_AN, BRCM_CL45VEN_EEE_CONTROL, (u32)val);
+	pr_warn("eee_control=%d (after)", val);
 
 	/* Advertise EEE */
 	val = phy_read_mmd(phydev, MDIO_MMD_AN, BCM_CL45VEN_EEE_ADV);
@@ -403,6 +405,9 @@ int bcm_phy_set_eee(struct phy_device *phydev, bool enable)
 		val &= ~mask;
 
 	phy_write_mmd(phydev, MDIO_MMD_AN, BCM_CL45VEN_EEE_ADV, (u32)val);
+
+	pr_warn("phylib bcm_phy_set_eee called for PHY %s, enable=%d\n",
+		phydev_name(phydev), enable);
 
 	return 0;
 }
