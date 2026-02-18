@@ -656,7 +656,12 @@ static const struct phylink_pcs_ops macb_phylink_pcs_ops = {
 	.pcs_config = macb_pcs_config,
 };
 
-static void macb_mac_eee_enable(struct macb *bp, bool enable)
+/* Default TX LPI idle timeout in microseconds.
+ * The MAC will enter LPI after this period of TX inactivity.
+ */
+#define MACB_TX_LPI_TIMER_DEFAULT	500
+
+static void macb_tx_lpi_set(struct macb *bp, bool enable)
 {
 	unsigned long flags;
 	u32 ncr;
@@ -670,10 +675,41 @@ static void macb_mac_eee_enable(struct macb *bp, bool enable)
 		ncr &= ~GEM_BIT(TXLPIEN);
 	macb_writel(bp, NCR, ncr);
 
+	bp->tx_lpi_enabled = enable;
+
 	spin_unlock_irqrestore(&bp->lock, flags);
 
 	netdev_dbg(bp->dev, "EEE TX LPI %s (NCR=0x%08x)\n",
 		   enable ? "enabled" : "disabled", ncr);
+}
+
+static void macb_tx_lpi_work_fn(struct work_struct *work)
+{
+	struct macb *bp = container_of(work, struct macb, tx_lpi_work.work);
+
+	if (bp->eee_active)
+		macb_tx_lpi_set(bp, true);
+}
+
+/* Called from TX path to wake from LPI before transmitting */
+static inline void macb_tx_lpi_wake(struct macb *bp)
+{
+	if (!bp->tx_lpi_enabled)
+		return;
+
+	macb_tx_lpi_set(bp, false);
+	/* Cancel any pending re-entry */
+	cancel_delayed_work(&bp->tx_lpi_work);
+}
+
+/* Schedule LPI re-entry after TX idle timeout */
+static inline void macb_tx_lpi_schedule(struct macb *bp)
+{
+	if (!bp->eee_active)
+		return;
+
+	schedule_delayed_work(&bp->tx_lpi_work,
+			      usecs_to_jiffies(bp->tx_lpi_timer_us));
 }
 
 static void macb_mac_config(struct phylink_config *config, unsigned int mode,
@@ -748,11 +784,15 @@ static void macb_mac_link_down(struct phylink_config *config, unsigned int mode,
 			queue_writel(queue, IDR,
 				     bp->rx_intr_mask | MACB_TX_INT_FLAGS | MACB_BIT(HRESP));
 
+	/* Cancel any pending LPI entry */
+	cancel_delayed_work(&bp->tx_lpi_work);
+
 	/* Disable TX LPI, Rx, and Tx */
 	ctrl = macb_readl(bp, NCR) & ~(GEM_BIT(TXLPIEN) | MACB_BIT(RE) | MACB_BIT(TE));
 	macb_writel(bp, NCR, ctrl);
 
 	bp->eee_active = false;
+	bp->tx_lpi_enabled = false;
 
 	netif_tx_stop_all_queues(ndev);
 }
@@ -822,15 +862,13 @@ static void macb_mac_link_up(struct phylink_config *config,
 
 	netif_tx_wake_all_queues(ndev);
 
-	/* EEE: check if link partner negotiated EEE and enable TX LPI */
+	/* EEE: check if link partner negotiated EEE */
 	if (phy && (bp->caps & MACB_CAPS_EEE)) {
-		bp->eee_active = phy_init_eee(phy, false) >= 0;
-		netdev_dbg(ndev, "EEE: active=%d enable_tx_lpi=%d\n",
-			   bp->eee_active, phy->enable_tx_lpi);
-		if (bp->eee_active && phy->enable_tx_lpi)
-			macb_mac_eee_enable(bp, true);
-		else
-			macb_mac_eee_enable(bp, false);
+		bp->eee_active = phy_init_eee(phy, false) >= 0 &&
+				 phy->enable_tx_lpi;
+		netdev_dbg(ndev, "EEE: active=%d\n", bp->eee_active);
+		if (bp->eee_active)
+			macb_tx_lpi_schedule(bp);
 	}
 }
 
@@ -1345,6 +1383,11 @@ static int macb_tx_complete(struct macb_queue *queue, int budget)
 	    CIRC_CNT(queue->tx_head, queue->tx_tail,
 		     bp->tx_ring_size) <= MACB_TX_WAKEUP_THRESH(bp))
 		netif_wake_subqueue(bp->dev, queue_index);
+
+	/* Schedule LPI re-entry when TX ring is drained */
+	if (queue->tx_head == queue->tx_tail)
+		macb_tx_lpi_schedule(bp);
+
 	spin_unlock_irqrestore(&queue->tx_ptr_lock, flags);
 
 	return packets;
@@ -2374,6 +2417,10 @@ static netdev_tx_t macb_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	bool is_lso;
 	netdev_tx_t ret = NETDEV_TX_OK;
 
+	/* Wake from LPI before transmitting */
+	if (unlikely(bp->tx_lpi_enabled))
+		macb_tx_lpi_wake(bp);
+
 	if (macb_clear_csum(skb)) {
 		dev_kfree_skb_any(skb);
 		return ret;
@@ -3130,6 +3177,8 @@ static int macb_close(struct net_device *dev)
 	unsigned int q;
 
 	netif_tx_stop_all_queues(dev);
+
+	cancel_delayed_work_sync(&bp->tx_lpi_work);
 
 	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
 		napi_disable(&queue->napi_rx);
@@ -5403,6 +5452,8 @@ static int macb_probe(struct platform_device *pdev)
 	}
 
 	INIT_WORK(&bp->hresp_err_bh_work, macb_hresp_error_task);
+	INIT_DELAYED_WORK(&bp->tx_lpi_work, macb_tx_lpi_work_fn);
+	bp->tx_lpi_timer_us = MACB_TX_LPI_TIMER_DEFAULT;
 
 	netdev_info(dev, "Cadence %s rev 0x%08x at 0x%08lx irq %d (%pM)\n",
 		    macb_is_gem(bp) ? "GEM" : "MACB", macb_readl(bp, MID),
@@ -5447,6 +5498,7 @@ static void macb_remove(struct platform_device *pdev)
 		mdiobus_free(bp->mii_bus);
 
 		device_set_wakeup_enable(&bp->pdev->dev, 0);
+		cancel_delayed_work_sync(&bp->tx_lpi_work);
 		cancel_work_sync(&bp->hresp_err_bh_work);
 		pm_runtime_disable(&pdev->dev);
 		pm_runtime_dont_use_autosuspend(&pdev->dev);
