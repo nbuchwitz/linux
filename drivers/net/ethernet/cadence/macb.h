@@ -1049,6 +1049,10 @@ struct gem_stats {
 	u32	rx_ip_header_checksum_errors;
 	u32	rx_tcp_checksum_errors;
 	u32	rx_udp_checksum_errors;
+	u32	rx_lpi_transitions;
+	u32	rx_lpi_time;
+	u32	tx_lpi_transitions;
+	u32	tx_lpi_time;
 };
 
 /* Describes the name and offset of an individual statistic register, as
