@@ -78,8 +78,6 @@
 #define MACB_TBQPH		0x04C8
 #define MACB_RBQPH		0x04D4
 
-#define MACB_NCR_LPIEN   BIT(19)  // From Microchip doc
-
 /* GEM register offsets. */
 #define GEM_NCR			0x0000 /* Network Control */
 #define GEM_NCFGR		0x0004 /* Network Config */
@@ -263,6 +261,10 @@
 #define MACB_OSSMODE_SIZE	1
 #define MACB_MIIONRGMII_OFFSET	28 /* MII Usage on RGMII Interface */
 #define MACB_MIIONRGMII_SIZE	1
+
+/* GEM specific NCR bitfields. */
+#define GEM_TXLPIEN_OFFSET	19 /* TX LPI Enable */
+#define GEM_TXLPIEN_SIZE	1
 
 /* Bitfields in NCFGR */
 #define MACB_SPD_OFFSET		0 /* Speed */
@@ -459,6 +461,8 @@
 #define MACB_PDRSFT_SIZE	1
 #define MACB_SRI_OFFSET		26 /* TSU Seconds Register Increment */
 #define MACB_SRI_SIZE		1
+#define GEM_RXLPISBC_OFFSET	27 /* RX LPI Status Bit Change */
+#define GEM_RXLPISBC_SIZE	1
 #define GEM_WOL_OFFSET		28 /* Enable wake-on-lan interrupt */
 #define GEM_WOL_SIZE		1
 
@@ -762,6 +766,7 @@
 #define MACB_CAPS_MIIONRGMII			0x00000200
 #define MACB_CAPS_NEED_TSUCLK			0x00000400
 #define MACB_CAPS_QUEUE_DISABLE			0x00000800
+#define MACB_CAPS_EEE				0x00001000
 #define MACB_CAPS_PCS				0x01000000
 #define MACB_CAPS_HIGH_SPEED			0x02000000
 #define MACB_CAPS_CLK_HW_CHG			0x04000000
@@ -1143,6 +1148,10 @@ static const struct gem_statistic gem_statistics[] = {
 			    GEM_BIT(NDS_RXERR)),
 	GEM_STAT_TITLE_BITS(RXUDPCCNT, "rx_udp_checksum_errors",
 			    GEM_BIT(NDS_RXERR)),
+	GEM_STAT_TITLE(RXLPI, "rx_lpi_transitions"),
+	GEM_STAT_TITLE(RXLPITIME, "rx_lpi_time"),
+	GEM_STAT_TITLE(TXLPI, "tx_lpi_transitions"),
+	GEM_STAT_TITLE(TXLPITIME, "tx_lpi_time"),
 };
 
 #define GEM_STATS_LEN ARRAY_SIZE(gem_statistics)
@@ -1346,6 +1355,10 @@ struct macb {
 	u32			rx_watermark;
 
 	struct macb_ptp_info	*ptp_info;	/* macb-ptp interface */
+
+	/* EEE state */
+	bool			eee_active;
+	bool			tx_lpi_enabled;
 
 	struct phy		*sgmii_phy;	/* for ZynqMP SGMII mode */
 

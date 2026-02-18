@@ -656,26 +656,24 @@ static const struct phylink_pcs_ops macb_phylink_pcs_ops = {
 	.pcs_config = macb_pcs_config,
 };
 
-static int macb_mac_eee_enable(struct macb *bp, bool enable)
+static void macb_mac_eee_enable(struct macb *bp, bool enable)
 {
 	unsigned long flags;
+	u32 ncr;
+
 	spin_lock_irqsave(&bp->lock, flags);
 
-	u32 ncr = macb_readl(bp, NCR);
-	if (enable) {
-		pr_warn("Enabling EEE via NCR LPIEN bit\n");
-		ncr |= MACB_NCR_LPIEN;
-	} else {
-		pr_warn("Disabling EEE (clearing LPIEN bit)\n");
-		ncr &= ~MACB_NCR_LPIEN;
-	}
+	ncr = macb_readl(bp, NCR);
+	if (enable)
+		ncr |= GEM_BIT(TXLPIEN);
+	else
+		ncr &= ~GEM_BIT(TXLPIEN);
 	macb_writel(bp, NCR, ncr);
 
-	u32 readback = macb_readl(bp, NCR);
-	pr_warn("NCR after EEE set: 0x%08x\n", readback);
-
 	spin_unlock_irqrestore(&bp->lock, flags);
-	return 0;
+
+	netdev_dbg(bp->dev, "EEE TX LPI %s (NCR=0x%08x)\n",
+		   enable ? "enabled" : "disabled", ncr);
 }
 
 static void macb_mac_config(struct phylink_config *config, unsigned int mode,
@@ -750,9 +748,11 @@ static void macb_mac_link_down(struct phylink_config *config, unsigned int mode,
 			queue_writel(queue, IDR,
 				     bp->rx_intr_mask | MACB_TX_INT_FLAGS | MACB_BIT(HRESP));
 
-	/* Disable Rx and Tx */
-	ctrl = macb_readl(bp, NCR) & ~(MACB_BIT(RE) | MACB_BIT(TE));
+	/* Disable TX LPI, Rx, and Tx */
+	ctrl = macb_readl(bp, NCR) & ~(GEM_BIT(TXLPIEN) | MACB_BIT(RE) | MACB_BIT(TE));
 	macb_writel(bp, NCR, ctrl);
+
+	bp->eee_active = false;
 
 	netif_tx_stop_all_queues(ndev);
 }
@@ -769,7 +769,6 @@ static void macb_mac_link_up(struct phylink_config *config,
 	unsigned long flags;
 	unsigned int q;
 	u32 ctrl;
-	bool active;
 
 	spin_lock_irqsave(&bp->lock, flags);
 
@@ -823,11 +822,16 @@ static void macb_mac_link_up(struct phylink_config *config,
 
 	netif_tx_wake_all_queues(ndev);
 
-	// reset txlpien =  TODO?
-	macb_mac_eee_enable(bp, false);
-	active = phy_init_eee(ndev->phydev, 0) >= 0;
-	netdev_info(ndev, "eee active=%d enable_tx_lpi=%d\n", active, ndev->phydev->enable_tx_lpi);
-	//macb_mac_eee_enable(bp, active && ndev->phydev->enable_tx_lpi);
+	/* EEE: check if link partner negotiated EEE and enable TX LPI */
+	if (phy && (bp->caps & MACB_CAPS_EEE)) {
+		bp->eee_active = phy_init_eee(phy, false) >= 0;
+		netdev_dbg(ndev, "EEE: active=%d enable_tx_lpi=%d\n",
+			   bp->eee_active, phy->enable_tx_lpi);
+		if (bp->eee_active && phy->enable_tx_lpi)
+			macb_mac_eee_enable(bp, true);
+		else
+			macb_mac_eee_enable(bp, false);
+	}
 }
 
 static struct phylink_pcs *macb_mac_select_pcs(struct phylink_config *config,
@@ -844,42 +848,11 @@ static struct phylink_pcs *macb_mac_select_pcs(struct phylink_config *config,
 		return NULL;
 }
 
-static void macb_mac_disable_tx_lpi(struct phylink_config *config)
-{
-	struct net_device *ndev = to_net_dev(config->dev);
-	struct macb *bp = netdev_priv(ndev);
-
-	macb_mac_eee_enable(bp, false);
-}
-
-static int macb_mac_enable_tx_lpi(struct phylink_config *config, u32 timer,
-				     bool tx_clk_stop)
-{
-	struct net_device *ndev = to_net_dev(config->dev);
-	struct macb *bp = netdev_priv(ndev);
-	int ret;
-
-	// TODO: to stuff
-
-	ret = macb_mac_eee_enable(bp, true);
-	if (ret < 0)
-		goto tx_lpi_fail;
-
-	return 0;
-
-tx_lpi_fail:
-	netdev_err(ndev, "Failed to enable TX LPI with error %pe\n",
-		ERR_PTR(ret));
-	return ret;
-}
-
 static const struct phylink_mac_ops macb_phylink_ops = {
 	.mac_select_pcs = macb_mac_select_pcs,
 	.mac_config = macb_mac_config,
 	.mac_link_down = macb_mac_link_down,
 	.mac_link_up = macb_mac_link_up,
-	//.mac_disable_tx_lpi = macb_mac_disable_tx_lpi,
-	//.mac_enable_tx_lpi = macb_mac_enable_tx_lpi,
 };
 
 static bool macb_phy_handle_exists(struct device_node *dn)
@@ -3124,7 +3097,8 @@ static int macb_open(struct net_device *dev)
 	if (err)
 		goto phy_off;
 
-	phy_support_eee(dev->phydev);
+	if ((bp->caps & MACB_CAPS_EEE) && dev->phydev)
+		phy_support_eee(dev->phydev);
 
 	netif_tx_start_all_queues(dev);
 
@@ -3562,38 +3536,28 @@ static int macb_set_ringparam(struct net_device *netdev,
 static int macb_get_eee(struct net_device *ndev, struct ethtool_keee *edata)
 {
 	struct macb *bp = netdev_priv(ndev);
+
+	if (!(bp->caps & MACB_CAPS_EEE))
+		return -EOPNOTSUPP;
+
 	return phylink_ethtool_get_eee(bp->phylink, edata);
 }
 
-static int macb_set_eee(struct net_device *ndev,
-			struct ethtool_keee *edata)
+static int macb_set_eee(struct net_device *ndev, struct ethtool_keee *edata)
 {
 	struct macb *bp = netdev_priv(ndev);
-	macb_mac_eee_enable(bp, edata->tx_lpi_enabled && edata->eee_enabled);
+
+	if (!(bp->caps & MACB_CAPS_EEE))
+		return -EOPNOTSUPP;
+
+	/*
+	 * Don't directly control TXLPIEN here. phylink_ethtool_set_eee()
+	 * updates the PHY, which will bounce the link if tx_lpi_enabled
+	 * changes. That triggers mac_link_down/mac_link_up where we
+	 * enable/disable TXLPIEN based on the negotiated state.
+	 */
 	return phylink_ethtool_set_eee(bp->phylink, edata);
-	
-	/*bool active;
-	u32 ncr = macb_readl(priv, NCR);
-
-	priv->eee_enabled = edata->eee_enabled;
-
-	if (edata->eee_enabled) {
-		netdev_info(dev, "Enabling EEE via NCR LPIEN bit\n");
-		ncr |= MACB_NCR_LPIEN;
-		active = phy_init_eee(dev->phydev, false) >= 0;
-	} else {
-		netdev_info(dev, "Disabling EEE (clearing LPIEN bit)\n");
-		ncr &= ~MACB_NCR_LPIEN;
-	}
-
-	macb_writel(priv, NCR, ncr);
-
-	u32 readback = macb_readl(priv, NCR);
-	netdev_info(dev, "NCR after EEE set: 0x%08x\n", readback);
-
-	return phy_ethtool_set_eee(dev->phydev, edata);*/
 }
-
 
 #ifdef CONFIG_MACB_USE_HWSTAMP
 static unsigned int gem_get_tsu_rate(struct macb *bp)
@@ -3988,9 +3952,6 @@ static const struct ethtool_ops macb_ethtool_ops = {
 	.set_link_ksettings     = macb_set_link_ksettings,
 	.get_ringparam		= macb_get_ringparam,
 	.set_ringparam		= macb_set_ringparam,
-	.get_eee		= macb_get_eee,
-	.set_eee		= macb_set_eee,
-	.nway_reset		= phy_ethtool_nway_reset,
 };
 
 static const struct ethtool_ops gem_ethtool_ops = {
@@ -5183,7 +5144,8 @@ static const struct macb_config versal_config = {
 static const struct macb_config raspberrypi_rp1_config = {
 	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE | MACB_CAPS_CLK_HW_CHG |
 		MACB_CAPS_JUMBO |
-		MACB_CAPS_GEM_HAS_PTP,
+		MACB_CAPS_GEM_HAS_PTP |
+		MACB_CAPS_EEE,
 	.dma_burst_length = 16,
 	.clk_init = macb_clk_init,
 	.init = macb_init,
