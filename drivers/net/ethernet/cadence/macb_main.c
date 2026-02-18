@@ -656,10 +656,16 @@ static const struct phylink_pcs_ops macb_phylink_pcs_ops = {
 	.pcs_config = macb_pcs_config,
 };
 
-/* Default TX LPI idle timeout in microseconds.
+/* Default TX LPI idle timeout in milliseconds.
  * The MAC will enter LPI after this period of TX inactivity.
  */
-#define MACB_TX_LPI_TIMER_DEFAULT	500
+#define MACB_TX_LPI_TIMER_DEFAULT_MS	5
+
+/* PHY wake time from LPI in microseconds.
+ * IEEE 802.3az: Tw_sys is ~17us for 1000BASE-T, ~30us for 100BASE-TX.
+ * Use a conservative value to ensure the PHY has fully exited LPI.
+ */
+#define MACB_TX_LPI_WAKE_TIME_US	50
 
 static void macb_tx_lpi_set(struct macb *bp, bool enable)
 {
@@ -700,6 +706,9 @@ static inline void macb_tx_lpi_wake(struct macb *bp)
 	macb_tx_lpi_set(bp, false);
 	/* Cancel any pending re-entry */
 	cancel_delayed_work(&bp->tx_lpi_work);
+
+	/* Wait for PHY to exit LPI before transmitting */
+	udelay(MACB_TX_LPI_WAKE_TIME_US);
 }
 
 /* Schedule LPI re-entry after TX idle timeout */
@@ -709,7 +718,7 @@ static inline void macb_tx_lpi_schedule(struct macb *bp)
 		return;
 
 	schedule_delayed_work(&bp->tx_lpi_work,
-			      usecs_to_jiffies(bp->tx_lpi_timer_us));
+			      msecs_to_jiffies(bp->tx_lpi_timer_ms));
 }
 
 static void macb_mac_config(struct phylink_config *config, unsigned int mode,
@@ -862,13 +871,17 @@ static void macb_mac_link_up(struct phylink_config *config,
 
 	netif_tx_wake_all_queues(ndev);
 
-	/* EEE: check if link partner negotiated EEE */
+	/* EEE: check if link partner negotiated EEE.
+	 * Per IEEE 802.3az / Microchip GMAC docs: LPI must not be
+	 * requested until the link has been up for at least 1 second.
+	 */
 	if (phy && (bp->caps & MACB_CAPS_EEE)) {
 		bp->eee_active = phy_init_eee(phy, false) >= 0 &&
 				 phy->enable_tx_lpi;
 		netdev_dbg(ndev, "EEE: active=%d\n", bp->eee_active);
 		if (bp->eee_active)
-			macb_tx_lpi_schedule(bp);
+			schedule_delayed_work(&bp->tx_lpi_work,
+					      msecs_to_jiffies(1000));
 	}
 }
 
@@ -5453,7 +5466,7 @@ static int macb_probe(struct platform_device *pdev)
 
 	INIT_WORK(&bp->hresp_err_bh_work, macb_hresp_error_task);
 	INIT_DELAYED_WORK(&bp->tx_lpi_work, macb_tx_lpi_work_fn);
-	bp->tx_lpi_timer_us = MACB_TX_LPI_TIMER_DEFAULT;
+	bp->tx_lpi_timer_ms = MACB_TX_LPI_TIMER_DEFAULT_MS;
 
 	netdev_info(dev, "Cadence %s rev 0x%08x at 0x%08lx irq %d (%pM)\n",
 		    macb_is_gem(bp) ? "GEM" : "MACB", macb_readl(bp, MID),
