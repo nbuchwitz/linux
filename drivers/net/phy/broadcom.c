@@ -128,7 +128,17 @@ static int bcm54210e_config_init(struct phy_device *phydev)
 
 static int bcm54213pe_config_init(struct phy_device *phydev)
 {
-	return bcm54210e_config_init(phydev);
+	int err;
+
+	err = bcm54210e_config_init(phydev);
+	if (err)
+		return err;
+
+	/* Enable the PHY's EEE LPI state machine so that received LPI
+	 * is signalled on the RGMII interface.  Without this the MAC
+	 * never sees RX LPI and its counters stay at zero.
+	 */
+	return bcm_phy_set_eee(phydev, true);
 }
 
 static int bcm54612e_config_init(struct phy_device *phydev)
