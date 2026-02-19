@@ -461,6 +461,8 @@
 #define MACB_PDRSFT_SIZE	1
 #define MACB_SRI_OFFSET		26 /* TSU Seconds Register Increment */
 #define MACB_SRI_SIZE		1
+#define GEM_RXLPISBC_OFFSET	27 /* RX LPI Status Bit Change */
+#define GEM_RXLPISBC_SIZE	1
 #define GEM_WOL_OFFSET		28 /* Enable wake-on-lan interrupt */
 #define GEM_WOL_SIZE		1
 
