@@ -803,10 +803,16 @@ static void macb_mac_link_down(struct phylink_config *config, unsigned int mode,
 	unsigned int q;
 	u32 ctrl;
 
-	if (!(bp->caps & MACB_CAPS_MACB_IS_EMAC))
-		for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue)
-			queue_writel(queue, IDR,
-				     bp->rx_intr_mask | MACB_TX_INT_FLAGS | MACB_BIT(HRESP));
+	if (!(bp->caps & MACB_CAPS_MACB_IS_EMAC)) {
+		for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
+			u32 idr = bp->rx_intr_mask | MACB_TX_INT_FLAGS |
+				  MACB_BIT(HRESP);
+
+			if (bp->caps & MACB_CAPS_EEE)
+				idr |= GEM_BIT(RXLPISBC);
+			queue_writel(queue, IDR, idr);
+		}
+	}
 
 	/* Cancel any pending LPI entry */
 	cancel_delayed_work(&bp->tx_lpi_work);
@@ -817,6 +823,7 @@ static void macb_mac_link_down(struct phylink_config *config, unsigned int mode,
 
 	bp->eee_active = false;
 	bp->tx_lpi_enabled = false;
+	bp->rx_lpi_active = false;
 
 	netif_tx_stop_all_queues(ndev);
 }
@@ -859,10 +866,14 @@ static void macb_mac_link_up(struct phylink_config *config,
 			ctrl |= MACB_BIT(PAE);
 
 		for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
+			u32 ier = bp->rx_intr_mask | MACB_TX_INT_FLAGS |
+				  MACB_BIT(HRESP);
+
+			if (bp->caps & MACB_CAPS_EEE)
+				ier |= GEM_BIT(RXLPISBC);
 			queue->tx_head = 0;
 			queue->tx_tail = 0;
-			queue_writel(queue, IER,
-				     bp->rx_intr_mask | MACB_TX_INT_FLAGS | MACB_BIT(HRESP));
+			queue_writel(queue, IER, ier);
 		}
 	}
 
@@ -2129,6 +2140,15 @@ static irqreturn_t macb_interrupt(int irq, void *dev_id)
 
 			if (bp->caps & MACB_CAPS_ISR_CLEAR_ON_WRITE)
 				queue_writel(queue, ISR, MACB_BIT(HRESP));
+		}
+
+		if (status & GEM_BIT(RXLPISBC)) {
+			bp->rx_lpi_active = !bp->rx_lpi_active;
+			netdev_dbg(dev, "EEE RX LPI %s\n",
+				   bp->rx_lpi_active ? "enter" : "exit");
+			if (bp->caps & MACB_CAPS_ISR_CLEAR_ON_WRITE)
+				queue_writel(queue, ISR,
+					     GEM_BIT(RXLPISBC));
 		}
 		status = queue_readl(queue, ISR);
 	}

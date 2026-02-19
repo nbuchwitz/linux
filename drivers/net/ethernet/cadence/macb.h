@@ -1363,6 +1363,7 @@ struct macb {
 	/* EEE / LPI state */
 	bool			eee_active;
 	bool			tx_lpi_enabled;
+	bool			rx_lpi_active;
 	struct delayed_work	tx_lpi_work;
 	unsigned int		tx_lpi_timer_ms; /* idle timeout before LPI */
 
