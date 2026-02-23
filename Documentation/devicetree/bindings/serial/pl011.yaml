@@ -104,6 +104,25 @@ properties:
       on the device.
     enum: [1, 4]
 
+  rs485-tx-drain-poll:
+    description:
+      Use bounded polling instead of hrtimer callbacks to wait for TX
+      FIFO drain in RS485 mode. The hrtimer-based approach can add
+      50-100us of latency per callback, delaying RX re-enable and
+      causing the first bytes of slave responses to be lost in fast
+      request/response protocols. When set, the driver spins for TX
+      completion with a timeout, falling back to the hrtimer only if
+      the timeout is exceeded.
+    type: boolean
+
+  rs485-tx-drain-timeout-us:
+    description:
+      Explicit timeout in microseconds for the bounded TX drain poll.
+      When not specified, the timeout is auto-calculated as
+      (fifo_size + 1) * character_time, which adapts to baud rate
+      changes. Only meaningful when rs485-tx-drain-poll is set.
+    $ref: /schemas/types.yaml#/definitions/uint32
+
 required:
   - compatible
   - reg
@@ -112,6 +131,7 @@ required:
 dependencies:
   poll-rate-ms: [ auto-poll ]
   poll-timeout-ms: [ auto-poll ]
+  rs485-tx-drain-timeout-us: [ rs485-tx-drain-poll ]
 
 unevaluatedProperties: false
 
