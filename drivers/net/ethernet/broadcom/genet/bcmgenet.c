@@ -53,9 +53,6 @@
 	(TOTAL_DESC - priv->hw_params->tx_queues * priv->hw_params->tx_bds_per_q \
 	 - GENET_Q16_TX_BD_CNT)
 
-#define RX_BUF_LENGTH		2048
-#define SKB_ALIGNMENT		32
-
 /* Page pool RX buffer layout:
  * XDP_PACKET_HEADROOM | RSB(64) + pad(2) | frame data | skb_shared_info
  * The HW writes the 64B RSB + 2B alignment padding before the frame.
@@ -63,6 +60,31 @@
 #define GENET_XDP_HEADROOM	XDP_PACKET_HEADROOM
 #define GENET_RSB_PAD		(sizeof(struct status_64) + 2)
 #define GENET_RX_HEADROOM	(GENET_XDP_HEADROOM + GENET_RSB_PAD)
+
+/* Maximum frame length: MTU + all L2 overhead */
+static unsigned int bcmgenet_max_frame_len(const struct net_device *dev)
+{
+	return dev->mtu + ETH_HLEN + VLAN_HLEN + ENET_BRCM_TAG_LEN +
+	       ETH_FCS_LEN + ENET_PAD;
+}
+
+/* DMA buffer length: RSB + alignment padding + maximum frame */
+static unsigned int bcmgenet_rx_buf_len(const struct net_device *dev)
+{
+	return GENET_RSB_PAD + bcmgenet_max_frame_len(dev);
+}
+
+/* Page order needed to hold XDP headroom + DMA buffer + skb_shared_info */
+static unsigned int bcmgenet_rx_page_order(const struct net_device *dev)
+{
+	return get_order(GENET_RX_HEADROOM + bcmgenet_rx_buf_len(dev) +
+			 SKB_DATA_ALIGN(sizeof(struct skb_shared_info)));
+}
+
+/* Total usable size of an allocated RX page (for build_skb/xdp_init_buff) */
+#define GENET_RX_PAGE_SIZE(priv)	(PAGE_SIZE << (priv)->rx_page_order)
+
+#define BCMGENET_MAX_MTU		9000
 
 /* Tx/Rx DMA register offset, skip 256 descriptors */
 #define WORDS_PER_BD(p)		(p->hw_params->words_per_bd)
@@ -2308,10 +2330,12 @@ static struct sk_buff *bcmgenet_xdp_build_skb(struct bcmgenet_rx_ring *ring,
 					      struct xdp_buff *xdp,
 					      struct page *rx_page)
 {
+	struct bcmgenet_priv *priv = ring->priv;
 	unsigned int metasize;
 	struct sk_buff *skb;
 
-	skb = napi_build_skb(xdp->data_hard_start, PAGE_SIZE);
+	skb = napi_build_skb(xdp->data_hard_start,
+			     GENET_RX_PAGE_SIZE(priv));
 	if (unlikely(!skb))
 		return NULL;
 
@@ -2550,7 +2574,7 @@ static unsigned int bcmgenet_desc_rx(struct bcmgenet_rx_ring *ring,
 		}
 
 		page_pool_dma_sync_for_cpu(ring->page_pool, rx_page, 0,
-					   RX_BUF_LENGTH);
+					   priv->rx_buf_len);
 
 		hard_start = page_address(rx_page) + rx_off;
 		status = (struct status_64 *)hard_start;
@@ -2567,7 +2591,7 @@ static unsigned int bcmgenet_desc_rx(struct bcmgenet_rx_ring *ring,
 			  __func__, p_index, ring->c_index,
 			  ring->read_ptr, dma_length_status);
 
-		if (unlikely(len > RX_BUF_LENGTH)) {
+		if (unlikely(len > priv->rx_buf_len)) {
 			netif_err(priv, rx_status, dev, "oversized packet\n");
 			BCMGENET_STATS64_INC(stats, length_errors);
 			page_pool_put_full_page(ring->page_pool, rx_page,
@@ -2623,7 +2647,8 @@ static unsigned int bcmgenet_desc_rx(struct bcmgenet_rx_ring *ring,
 			if (priv->crc_fwd_en)
 				pkt_len -= ETH_FCS_LEN;
 
-			xdp_init_buff(&xdp, PAGE_SIZE, &ring->xdp_rxq);
+			xdp_init_buff(&xdp, GENET_RX_PAGE_SIZE(priv),
+				      &ring->xdp_rxq);
 			xdp_prepare_buff(&xdp, page_address(rx_page),
 					 GENET_RX_HEADROOM, pkt_len, false);
 
@@ -2647,7 +2672,8 @@ static unsigned int bcmgenet_desc_rx(struct bcmgenet_rx_ring *ring,
 			 * hard_start, frame begins after RSB(64) + pad(2).
 			 */
 			skb = napi_build_skb(hard_start,
-					     PAGE_SIZE - GENET_XDP_HEADROOM);
+					     GENET_RX_PAGE_SIZE(priv) -
+					     GENET_XDP_HEADROOM);
 			if (unlikely(!skb)) {
 				BCMGENET_STATS64_INC(stats, dropped);
 				page_pool_put_full_page(ring->page_pool,
@@ -2873,7 +2899,8 @@ static void init_umac(struct bcmgenet_priv *priv)
 			     UMAC_MIB_CTRL);
 	bcmgenet_umac_writel(priv, 0, UMAC_MIB_CTRL);
 
-	bcmgenet_umac_writel(priv, ENET_MAX_MTU_SIZE, UMAC_MAX_FRAME_LEN);
+	bcmgenet_umac_writel(priv, bcmgenet_max_frame_len(priv->dev),
+			     UMAC_MAX_FRAME_LEN);
 
 	/* init tx registers, enable TSB */
 	reg = bcmgenet_tbuf_ctrl_get(priv);
@@ -2979,7 +3006,7 @@ static void bcmgenet_init_tx_ring(struct bcmgenet_priv *priv,
 
 	/* Set flow period for ring != 0 */
 	if (index)
-		flow_period_val = ENET_MAX_MTU_SIZE << 16;
+		flow_period_val = bcmgenet_max_frame_len(priv->dev) << 16;
 
 	bcmgenet_tdma_ring_writel(priv, index, 0, TDMA_PROD_INDEX);
 	bcmgenet_tdma_ring_writel(priv, index, 0, TDMA_CONS_INDEX);
@@ -2989,7 +3016,7 @@ static void bcmgenet_init_tx_ring(struct bcmgenet_priv *priv,
 				  TDMA_FLOW_PERIOD);
 	bcmgenet_tdma_ring_writel(priv, index,
 				  ((size << DMA_RING_SIZE_SHIFT) |
-				   RX_BUF_LENGTH), DMA_RING_BUF_SIZE);
+				   priv->rx_buf_len), DMA_RING_BUF_SIZE);
 
 	/* Set start and end address, read and write pointers */
 	bcmgenet_tdma_ring_writel(priv, index, start_ptr * words_per_bd,
@@ -3012,14 +3039,14 @@ static int bcmgenet_rx_ring_create_pool(struct bcmgenet_priv *priv,
 					struct bcmgenet_rx_ring *ring)
 {
 	struct page_pool_params pp_params = {
-		.order = 0,
+		.order = priv->rx_page_order,
 		.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
 		.pool_size = ring->size,
 		.nid = NUMA_NO_NODE,
 		.dev = &priv->pdev->dev,
 		.dma_dir = DMA_BIDIRECTIONAL,
 		.offset = GENET_XDP_HEADROOM,
-		.max_len = RX_BUF_LENGTH,
+		.max_len = priv->rx_buf_len,
 	};
 	int err;
 
@@ -3089,7 +3116,7 @@ static int bcmgenet_init_rx_ring(struct bcmgenet_priv *priv,
 	bcmgenet_rdma_ring_writel(priv, index, 0, RDMA_CONS_INDEX);
 	bcmgenet_rdma_ring_writel(priv, index,
 				  ((size << DMA_RING_SIZE_SHIFT) |
-				   RX_BUF_LENGTH), DMA_RING_BUF_SIZE);
+				   priv->rx_buf_len), DMA_RING_BUF_SIZE);
 	bcmgenet_rdma_ring_writel(priv, index,
 				  (DMA_FC_THRESH_LO <<
 				   DMA_XOFF_THRESHOLD_SHIFT) |
@@ -4086,6 +4113,25 @@ static int bcmgenet_xdp_xmit(struct net_device *dev, int num_frames,
 	return sent;
 }
 
+static int bcmgenet_change_mtu(struct net_device *dev, int new_mtu)
+{
+	struct bcmgenet_priv *priv = netdev_priv(dev);
+	bool running = netif_running(dev);
+	int err = 0;
+
+	if (running)
+		bcmgenet_close(dev);
+
+	WRITE_ONCE(dev->mtu, new_mtu);
+	priv->rx_buf_len = bcmgenet_rx_buf_len(dev);
+	priv->rx_page_order = bcmgenet_rx_page_order(dev);
+
+	if (running)
+		err = bcmgenet_open(dev);
+
+	return err;
+}
+
 static const struct net_device_ops bcmgenet_netdev_ops = {
 	.ndo_open		= bcmgenet_open,
 	.ndo_stop		= bcmgenet_close,
@@ -4096,6 +4142,7 @@ static const struct net_device_ops bcmgenet_netdev_ops = {
 	.ndo_eth_ioctl		= phy_do_ioctl_running,
 	.ndo_set_features	= bcmgenet_set_features,
 	.ndo_get_stats64	= bcmgenet_get_stats64,
+	.ndo_change_mtu		= bcmgenet_change_mtu,
 	.ndo_change_carrier	= bcmgenet_change_carrier,
 	.ndo_bpf		= bcmgenet_xdp,
 	.ndo_xdp_xmit		= bcmgenet_xdp_xmit,
@@ -4453,8 +4500,8 @@ static int bcmgenet_probe(struct platform_device *pdev)
 
 	/* Mii wait queue */
 	init_waitqueue_head(&priv->wq);
-	/* Always use RX_BUF_LENGTH (2KB) buffer for all chips */
-	priv->rx_buf_len = RX_BUF_LENGTH;
+	priv->rx_buf_len = bcmgenet_rx_buf_len(dev);
+	priv->rx_page_order = bcmgenet_rx_page_order(dev);
 	INIT_WORK(&priv->bcmgenet_irq_work, bcmgenet_irq_task);
 
 	priv->clk_wol = devm_clk_get_optional(&priv->pdev->dev, "enet-wol");
@@ -4510,6 +4557,8 @@ static int bcmgenet_probe(struct platform_device *pdev)
 	for (i = 0; i <= priv->hw_params->tx_queues; i++)
 		u64_stats_init(&priv->tx_rings[i].stats64.syncp);
 	u64_stats_init(&priv->tx_rings[DESC_INDEX].stats64.syncp);
+
+	dev->max_mtu = BCMGENET_MAX_MTU;
 
 	/* libphy will determine the link state */
 	netif_carrier_off(dev);
