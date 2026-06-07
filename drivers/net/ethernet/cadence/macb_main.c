@@ -3097,11 +3097,31 @@ static void macb_context_swap_start(struct macb *bp)
 	unsigned int q;
 	u32 ctrl;
 
-	/* Disable software Tx, disable HW Tx/Rx and disable NAPI. */
+	/* Quiesce NAPI and the BH workers first. The Tx NAPI poll
+	 * (macb_tx_complete()) and tx_error_task can both re-wake the Tx queues
+	 * via netif_wake_subqueue(), so they have to be stopped before the Tx
+	 * queues are disabled below.
+	 */
+	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
+		napi_disable(&queue->napi_rx);
+		napi_disable(&queue->napi_tx);
+		cancel_work_sync(&queue->tx_error_task);
+	}
+
+	cancel_work_sync(&bp->hresp_err_bh_work);
+	cancel_delayed_work_sync(&bp->tx_lpi_work);
+
+	/* Disable software Tx, gracefully halt and then disable HW Tx/Rx. */
 
 	netif_tx_disable(bp->netdev);
 
 	spin_lock_irqsave(&bp->lock, flags);
+
+	/* Halt the transmitter before clearing TE so we do not yank it in the
+	 * middle of a frame, mirroring macb_tx_error_task().
+	 */
+	if (macb_halt_tx(bp))
+		netdev_err(bp->netdev, "BUG: halt tx timed out during context swap\n");
 
 	ctrl = macb_readl(bp, NCR);
 	macb_writel(bp, NCR, ctrl & ~(MACB_BIT(RE) | MACB_BIT(TE)));
@@ -3118,15 +3138,8 @@ static void macb_context_swap_start(struct macb *bp)
 
 	spin_unlock_irqrestore(&bp->lock, flags);
 
-	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
-		napi_disable(&queue->napi_rx);
-		napi_disable(&queue->napi_tx);
+	for (q = 0; q < bp->num_queues; ++q)
 		netdev_tx_reset_queue(netdev_get_tx_queue(bp->netdev, q));
-		cancel_work_sync(&queue->tx_error_task);
-	}
-
-	cancel_work_sync(&bp->hresp_err_bh_work);
-	cancel_delayed_work_sync(&bp->tx_lpi_work);
 }
 
 static void macb_context_swap_end(struct macb *bp,
@@ -3134,22 +3147,30 @@ static void macb_context_swap_end(struct macb *bp,
 {
 	struct macb_context *old_ctx;
 	struct macb_queue *queue;
+	unsigned long flags;
 	unsigned int q;
 	u32 ctrl;
 
-	/* Swap contexts & give buffer pointers to HW. */
+	/* Swap contexts. */
 
 	old_ctx = bp->ctx;
 	bp->ctx = new_ctx;
-	macb_init_buffers(bp);
 
-	/* Start NAPI, HW Tx/Rx and software Tx. */
-
+	/* Enable NAPI before re-enabling interrupts so a poll scheduled by an
+	 * early interrupt is not lost. napi_enable() may sleep, so it must run
+	 * outside the bp->lock critical section below.
+	 */
 	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
 		napi_enable(&queue->napi_rx);
 		napi_enable(&queue->napi_tx);
 	}
 
+	/* Give buffer pointers to HW and re-enable Tx/Rx. Hold bp->lock to
+	 * serialise the register accesses against the IRQ handler.
+	 */
+	spin_lock_irqsave(&bp->lock, flags);
+
+	macb_init_buffers(bp);
 	macb_configure_dma(bp);
 
 	if (!(bp->caps & MACB_CAPS_MACB_IS_EMAC)) {
@@ -3164,6 +3185,8 @@ static void macb_context_swap_end(struct macb *bp,
 
 	ctrl = macb_readl(bp, NCR);
 	macb_writel(bp, NCR, ctrl | MACB_BIT(RE) | MACB_BIT(TE));
+
+	spin_unlock_irqrestore(&bp->lock, flags);
 
 	netif_tx_start_all_queues(bp->netdev);
 
@@ -3931,6 +3954,13 @@ static int macb_set_ringparam(struct net_device *netdev,
 		/* nothing to do */
 		return 0;
 	}
+
+	/* EMAC (at91) does not initialise NAPI and has a different datapath, so
+	 * the context-swap reconfiguration cannot run there. Refuse a live ring
+	 * resize; the interface has to be brought down first.
+	 */
+	if (running && (bp->caps & MACB_CAPS_MACB_IS_EMAC))
+		return -EOPNOTSUPP;
 
 	if (running) {
 		new_ctx = macb_context_alloc(bp, netdev->mtu,
