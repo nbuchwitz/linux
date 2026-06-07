@@ -3466,6 +3466,13 @@ static int macb_change_mtu(struct net_device *netdev, int new_mtu)
 	bool running = netif_running(netdev);
 	struct macb_context *new_ctx;
 
+	/* EMAC (at91) does not initialise NAPI and has a different datapath, so
+	 * the context-swap reconfiguration cannot run there. Refuse a live MTU
+	 * change; the interface has to be brought down first.
+	 */
+	if (running && (bp->caps & MACB_CAPS_MACB_IS_EMAC))
+		return -EOPNOTSUPP;
+
 	if (running) {
 		new_ctx = macb_context_alloc(bp, new_mtu,
 					     bp->configured_rx_ring_size,
