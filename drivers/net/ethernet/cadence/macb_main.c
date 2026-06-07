@@ -2183,14 +2183,23 @@ static irqreturn_t macb_interrupt(int irq, void *dev_id)
 	struct net_device *netdev = bp->netdev;
 	u32 status;
 
-	status = queue_readl(queue, ISR);
-
-	if (unlikely(!status))
-		return IRQ_NONE;
+	/* On clear-on-write hardware, reading ISR is non-destructive, so we
+	 * can filter out spurious interrupts without grabbing bp->lock. On
+	 * clear-on-read hardware such a read would consume the status bits, so
+	 * the read has to be deferred to the locked section below.
+	 */
+	if (bp->caps & MACB_CAPS_ISR_CLEAR_ON_WRITE) {
+		status = queue_readl(queue, ISR);
+		if (unlikely(!status))
+			return IRQ_NONE;
+	}
 
 	spin_lock(&bp->lock);
 
-	/* `status` stack variable might be stalled => re-read it */
+	/* Read (or re-read) ISR under the lock: a value read above may have
+	 * been stalled by a concurrent swap operation, and on clear-on-read
+	 * hardware this is the first and only read.
+	 */
 	status = queue_readl(queue, ISR);
 	if (unlikely(!status)) {
 		spin_unlock(&bp->lock);
