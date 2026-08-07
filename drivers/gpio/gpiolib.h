@@ -228,17 +228,17 @@ struct gpio_desc {
 struct gpio_chip_guard {
 	struct gpio_device *gdev;
 	struct gpio_chip *gc;
-	int idx;
+	struct srcu_ctr __percpu *scp;
 };
 
 DEFINE_CLASS(gpio_chip_guard,
 	     struct gpio_chip_guard,
-	     srcu_read_unlock(&_T.gdev->srcu, _T.idx),
+	     srcu_read_unlock_fast(&_T.gdev->srcu, _T.scp),
 	     ({
 		struct gpio_chip_guard _guard;
 
 		_guard.gdev = desc->gdev;
-		_guard.idx = srcu_read_lock(&_guard.gdev->srcu);
+		_guard.scp = srcu_read_lock_fast(&_guard.gdev->srcu);
 		_guard.gc = srcu_dereference(_guard.gdev->chip,
 					     &_guard.gdev->srcu);
 

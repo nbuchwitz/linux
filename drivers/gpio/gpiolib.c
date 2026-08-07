@@ -585,7 +585,7 @@ static struct gpio_desc *gpio_name_to_desc(const char * const name)
 
 	list_for_each_entry_srcu(gdev, &gpio_devices, list,
 				 srcu_read_lock_held(&gpio_devices_srcu)) {
-		guard(srcu)(&gdev->srcu);
+		guard(srcu_fast)(&gdev->srcu);
 
 		gc = srcu_dereference(gdev->chip, &gdev->srcu);
 		if (!gc)
@@ -1084,7 +1084,7 @@ static void gpiochip_setup_devs(void)
 
 	list_for_each_entry_srcu(gdev, &gpio_devices, list,
 				 srcu_read_lock_held(&gpio_devices_srcu)) {
-		guard(srcu)(&gdev->srcu);
+		guard(srcu_fast)(&gdev->srcu);
 
 		gc = srcu_dereference(gdev->chip, &gdev->srcu);
 		if (!gc) {
@@ -1189,7 +1189,7 @@ int gpiochip_add_data_with_key(struct gpio_chip *gc, void *data,
 		goto err_free_gdev;
 	gdev->id = ret;
 
-	ret = init_srcu_struct(&gdev->srcu);
+	ret = init_srcu_struct_fast(&gdev->srcu);
 	if (ret)
 		goto err_free_ida;
 	rcu_assign_pointer(gdev->chip, gc);
@@ -1484,7 +1484,7 @@ struct gpio_device *gpio_device_find(const void *data,
 		if (!device_is_registered(&gdev->dev))
 			continue;
 
-		guard(srcu)(&gdev->srcu);
+		guard(srcu_fast)(&gdev->srcu);
 
 		gc = srcu_dereference(gdev->chip, &gdev->srcu);
 
@@ -3484,7 +3484,7 @@ static int gpio_chip_get_multiple(struct gpio_chip *gc,
 /* The 'other' chip must be protected with its GPIO device's SRCU. */
 static bool gpio_device_chip_cmp(struct gpio_device *gdev, struct gpio_chip *gc)
 {
-	guard(srcu)(&gdev->srcu);
+	guard(srcu_fast)(&gdev->srcu);
 
 	return gc == srcu_dereference(gdev->chip, &gdev->srcu);
 }
@@ -3509,7 +3509,7 @@ int gpiod_get_array_value_complex(bool raw, bool can_sleep,
 		if (!can_sleep)
 			WARN_ON(array_info->gdev->can_sleep);
 
-		guard(srcu)(&array_info->gdev->srcu);
+		guard(srcu_fast)(&array_info->gdev->srcu);
 		gc = srcu_dereference(array_info->gdev->chip,
 				      &array_info->gdev->srcu);
 		if (!gc)
@@ -3854,7 +3854,7 @@ int gpiod_set_array_value_complex(bool raw, bool can_sleep,
 				return -EPERM;
 		}
 
-		guard(srcu)(&array_info->gdev->srcu);
+		guard(srcu_fast)(&array_info->gdev->srcu);
 		gc = srcu_dereference(array_info->gdev->chip,
 				      &array_info->gdev->srcu);
 		if (!gc)
@@ -5504,7 +5504,7 @@ static int gpiolib_seq_show(struct seq_file *s, void *v)
 	if (priv->newline)
 		seq_putc(s, '\n');
 
-	guard(srcu)(&gdev->srcu);
+	guard(srcu_fast)(&gdev->srcu);
 
 	gc = srcu_dereference(gdev->chip, &gdev->srcu);
 	if (!gc) {

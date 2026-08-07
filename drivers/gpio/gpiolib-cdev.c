@@ -211,7 +211,7 @@ static long linehandle_ioctl(struct file *file, unsigned int cmd,
 	unsigned int i;
 	int ret;
 
-	guard(srcu)(&lh->gdev->srcu);
+	guard(srcu_fast)(&lh->gdev->srcu);
 
 	if (!rcu_access_pointer(lh->gdev->chip))
 		return -ENODEV;
@@ -1446,7 +1446,7 @@ static long linereq_ioctl(struct file *file, unsigned int cmd,
 	struct linereq *lr = file->private_data;
 	void __user *ip = (void __user *)arg;
 
-	guard(srcu)(&lr->gdev->srcu);
+	guard(srcu_fast)(&lr->gdev->srcu);
 
 	if (!rcu_access_pointer(lr->gdev->chip))
 		return -ENODEV;
@@ -1477,7 +1477,7 @@ static __poll_t linereq_poll(struct file *file,
 	struct linereq *lr = file->private_data;
 	__poll_t events = 0;
 
-	guard(srcu)(&lr->gdev->srcu);
+	guard(srcu_fast)(&lr->gdev->srcu);
 
 	if (!rcu_access_pointer(lr->gdev->chip))
 		return EPOLLHUP | EPOLLERR;
@@ -1499,7 +1499,7 @@ static ssize_t linereq_read(struct file *file, char __user *buf,
 	ssize_t bytes_read = 0;
 	int ret;
 
-	guard(srcu)(&lr->gdev->srcu);
+	guard(srcu_fast)(&lr->gdev->srcu);
 
 	if (!rcu_access_pointer(lr->gdev->chip))
 		return -ENODEV;
@@ -1773,7 +1773,7 @@ static __poll_t lineevent_poll(struct file *file,
 	struct lineevent_state *le = file->private_data;
 	__poll_t events = 0;
 
-	guard(srcu)(&le->gdev->srcu);
+	guard(srcu_fast)(&le->gdev->srcu);
 
 	if (!rcu_access_pointer(le->gdev->chip))
 		return EPOLLHUP | EPOLLERR;
@@ -1811,7 +1811,7 @@ static ssize_t lineevent_read(struct file *file, char __user *buf,
 	ssize_t ge_size;
 	int ret;
 
-	guard(srcu)(&le->gdev->srcu);
+	guard(srcu_fast)(&le->gdev->srcu);
 
 	if (!rcu_access_pointer(le->gdev->chip))
 		return -ENODEV;
@@ -1893,7 +1893,7 @@ static long lineevent_ioctl(struct file *file, unsigned int cmd,
 	void __user *ip = (void __user *)arg;
 	struct gpiohandle_data ghd;
 
-	guard(srcu)(&le->gdev->srcu);
+	guard(srcu_fast)(&le->gdev->srcu);
 
 	if (!rcu_access_pointer(le->gdev->chip))
 		return -ENODEV;
@@ -2399,7 +2399,7 @@ static long gpio_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	struct gpio_device *gdev = cdev->gdev;
 	void __user *ip = (void __user *)arg;
 
-	guard(srcu)(&gdev->srcu);
+	guard(srcu_fast)(&gdev->srcu);
 
 	/* We fail any subsequent ioctl():s when the chip is gone */
 	if (!rcu_access_pointer(gdev->chip))
@@ -2461,7 +2461,7 @@ static void lineinfo_changed_func(struct work_struct *work)
 		 * Pin functions are in general much more static and while it's
 		 * not 100% bullet-proof, it's good enough for most cases.
 		 */
-		scoped_guard(srcu, &ctx->gdev->srcu) {
+		scoped_guard(srcu_fast, &ctx->gdev->srcu) {
 			gc = srcu_dereference(ctx->gdev->chip, &ctx->gdev->srcu);
 			if (gc &&
 			    !pinctrl_gpio_can_use_line(gc, ctx->chg.info.offset))
@@ -2548,7 +2548,7 @@ static __poll_t lineinfo_watch_poll(struct file *file,
 	struct gpio_chardev_data *cdev = file->private_data;
 	__poll_t events = 0;
 
-	guard(srcu)(&cdev->gdev->srcu);
+	guard(srcu_fast)(&cdev->gdev->srcu);
 
 	if (!rcu_access_pointer(cdev->gdev->chip))
 		return EPOLLHUP | EPOLLERR;
@@ -2571,7 +2571,7 @@ static ssize_t lineinfo_watch_read(struct file *file, char __user *buf,
 	int ret;
 	size_t event_size;
 
-	guard(srcu)(&cdev->gdev->srcu);
+	guard(srcu_fast)(&cdev->gdev->srcu);
 
 	if (!rcu_access_pointer(cdev->gdev->chip))
 		return -ENODEV;
