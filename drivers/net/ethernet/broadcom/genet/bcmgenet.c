@@ -3603,21 +3603,26 @@ static void bcmgenet_netif_stop(struct net_device *dev, bool stop_phy)
 	/* Stop completion polling before it can wake a stopped queue */
 	bcmgenet_disable_tx_napi(priv);
 	netif_tx_disable(dev);
+	netdev_info(dev, "DBG b1 tx napi+queues off\n");
 
 	/* Disable MAC receive */
 	bcmgenet_hfb_reg_writel(priv, 0, HFB_CTRL);
 	umac_enable_set(priv, CMD_RX_EN, false);
+	netdev_info(dev, "DBG b2 umac RX off\n");
 
 	if (stop_phy)
 		phy_stop(dev->phydev);
 
 	bcmgenet_dma_teardown(priv);
+	netdev_info(dev, "DBG b3 dma_teardown done\n");
 
 	/* Disable MAC transmit. TX DMA disabled must be done before this */
 	umac_enable_set(priv, CMD_TX_EN, false);
+	netdev_info(dev, "DBG b4 umac TX off\n");
 
 	bcmgenet_disable_rx_napi(priv);
 	bcmgenet_intr_disable(priv);
+	netdev_info(dev, "DBG b5 rx napi+intr off\n");
 
 	/* Wait for pending work items to complete. Since interrupts are
 	 * disabled no new work will be scheduled.
@@ -3626,7 +3631,9 @@ static void bcmgenet_netif_stop(struct net_device *dev, bool stop_phy)
 
 	/* tx reclaim */
 	bcmgenet_tx_reclaim_all(dev);
+	netdev_info(dev, "DBG b6 tx_reclaim_all done\n");
 	bcmgenet_fini_dma(priv);
+	netdev_info(dev, "DBG b7 fini_dma done\n");
 }
 
 static int bcmgenet_close(struct net_device *dev)
@@ -3899,16 +3906,20 @@ static int bcmgenet_change_mtu(struct net_device *dev, int new_mtu)
 
 	/* The watchdog trips on an idle queue once the rings are gone */
 	netif_device_detach(dev);
+	netdev_info(dev, "DBG A detach done mtu %u->%u\n", old_mtu, new_mtu);
 
 	/* Only the buffers and the MTU registers change, leave the PHY up */
 	bcmgenet_netif_stop(dev, false);
+	netdev_info(dev, "DBG B netif_stop done\n");
 	priv->datapath_up = false;
 
 	WRITE_ONCE(dev->mtu, new_mtu);
 	priv->rx_buf_len = bcmgenet_rx_buf_len(new_mtu);
 	bcmgenet_set_mtu_regs(priv, new_mtu);
+	netdev_info(dev, "DBG C set_mtu_regs done\n");
 
 	ret = bcmgenet_init_dma(priv, true);
+	netdev_info(dev, "DBG D init_dma ret %d\n", ret);
 	if (ret) {
 		/* Retry the size that was allocated a moment ago */
 		WRITE_ONCE(dev->mtu, old_mtu);
@@ -3932,7 +3943,9 @@ static int bcmgenet_change_mtu(struct net_device *dev, int new_mtu)
 	}
 
 	bcmgenet_hfb_restore(priv);
+	netdev_info(dev, "DBG E hfb_restore done\n");
 	bcmgenet_netif_start(dev, false);
+	netdev_info(dev, "DBG F netif_start done\n");
 
 	/* bcmgenet_netif_start() only restores the link interrupt */
 	if (bcmgenet_has_mdio_intr(priv))
