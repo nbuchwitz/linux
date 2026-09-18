@@ -53,8 +53,16 @@
 #define ENET_THLD_MAX		0xf0
 #define ENET_THLD_MAX_LEN	(ENET_THLD_MAX * ENET_THLD_UNIT)
 
+/* The transmit threshold stays at the register maximum, see init_umac() */
+#define ENET_TX_THLD_LEN	(ENET_THLD_MAX * ENET_THLD_UNIT)
+
 /* The transmitter has to hold a frame completely to insert its checksum */
-#define ENET_TX_CSUM_MAX_LEN	(ENET_THLD_MAX * ENET_THLD_UNIT)
+#define ENET_TX_CSUM_MAX_LEN	ENET_TX_THLD_LEN
+
+/* A frame ending just past the threshold stops the transmitter once a
+ * shorter frame follows, so keep frame lengths out of that window.
+ */
+#define ENET_TX_SAFE_LEN	(ENET_TX_THLD_LEN + 64)
 
 /* Largest MTU that fits one descriptor, with room for a VLAN tag so a VLAN
  * interface can use the parent MTU.
