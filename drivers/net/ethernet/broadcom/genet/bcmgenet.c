@@ -3899,64 +3899,29 @@ static int bcmgenet_change_mtu(struct net_device *dev, int new_mtu)
 	int ret;
 
 	netdev_info(dev, "DBG Z enter %u->%u\n", old_mtu, new_mtu);
+
 	if (!netif_running(dev)) {
 		WRITE_ONCE(dev->mtu, new_mtu);
 		priv->rx_buf_len = bcmgenet_rx_buf_len(new_mtu);
 		return 0;
 	}
 
-	/* The watchdog trips on an idle queue once the rings are gone */
-	netif_device_detach(dev);
-	netdev_info(dev, "DBG A detach done mtu %u->%u\n", old_mtu, new_mtu);
-
-	/* Only the buffers and the MTU registers change, leave the PHY up */
-	bcmgenet_netif_stop(dev, false);
-	netdev_info(dev, "DBG B netif_stop done\n");
-	priv->datapath_up = false;
+	ret = bcmgenet_close(dev);
+	netdev_info(dev, "DBG P close ret %d\n", ret);
+	if (ret)
+		return ret;
 
 	WRITE_ONCE(dev->mtu, new_mtu);
 	priv->rx_buf_len = bcmgenet_rx_buf_len(new_mtu);
-	bcmgenet_set_mtu_regs(priv, new_mtu);
-	netdev_info(dev, "DBG C set_mtu_regs done\n");
 
-	ret = bcmgenet_init_dma(priv, true);
-	netdev_info(dev, "DBG D init_dma ret %d\n", ret);
+	ret = bcmgenet_open(dev);
+	netdev_info(dev, "DBG Q open ret %d\n", ret);
 	if (ret) {
-		/* Retry the size that was allocated a moment ago */
 		WRITE_ONCE(dev->mtu, old_mtu);
 		priv->rx_buf_len = bcmgenet_rx_buf_len(old_mtu);
-		bcmgenet_set_mtu_regs(priv, old_mtu);
-		if (bcmgenet_init_dma(priv, true)) {
-			/* Nothing left to run on. Take the interface down so
-			 * that close and suspend do not tear it down twice.
-			 */
-			netdev_err(dev, "failed to restore MTU %u, closing\n",
-				   old_mtu);
-			netif_close(dev);
-
-			/* Mark the device present again, __dev_open()
-			 * refuses a detached one. The queues stay stopped
-			 * because the interface is down by now.
-			 */
-			netif_device_attach(dev);
-			return ret;
-		}
+		if (bcmgenet_open(dev))
+			netdev_err(dev, "failed to restore MTU %u\n", old_mtu);
 	}
-
-	bcmgenet_hfb_restore(priv);
-	netdev_info(dev, "DBG E hfb_restore done\n");
-	bcmgenet_netif_start(dev, false);
-	netdev_info(dev, "DBG F netif_start done\n");
-
-	/* bcmgenet_netif_start() only restores the link interrupt */
-	if (bcmgenet_has_mdio_intr(priv))
-		bcmgenet_intrl2_0_writel(priv, UMAC_IRQ_MDIO_EVENT,
-					 INTRL2_CPU_MASK_CLEAR);
-	netdev_info(dev, "DBG G mdio intr done\n");
-
-	priv->datapath_up = true;
-	netif_device_attach(dev);
-	netdev_info(dev, "DBG H attach done, returning %d\n", ret);
 
 	return ret;
 }
