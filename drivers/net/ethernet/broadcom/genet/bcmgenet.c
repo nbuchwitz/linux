@@ -60,6 +60,9 @@
 #define ENET_THLD_DEFAULT	0x80
 #define ENET_THLD_MAX		0xf0
 
+/* The transmitter has to hold a frame completely to insert its checksum */
+#define ENET_TX_CSUM_MAX_LEN	(ENET_THLD_MAX * ENET_THLD_UNIT)
+
 /* Page pool RX buffer layout:
  * RSB(64) + pad(2) | frame data | skb_shared_info
  * The HW writes the 64B RSB + 2B alignment padding before the frame.
@@ -2177,10 +2180,10 @@ static netdev_tx_t bcmgenet_xmit(struct sk_buff *skb, struct net_device *dev)
 		goto out;
 	}
 
-	/* The MAC holds a frame to insert its checksum, but only up to the
-	 * packet ready threshold. Longer frames are dropped silently.
+	/* The MAC holds a frame to insert its checksum, but only as much as
+	 * its FIFO takes. Longer frames are dropped silently.
 	 */
-	if (unlikely(skb->len > priv->tx_csum_max_len) &&
+	if (unlikely(skb->len > ENET_TX_CSUM_MAX_LEN) &&
 	    skb->ip_summed == CHECKSUM_PARTIAL) {
 		if (skb_checksum_help(skb)) {
 			BCMGENET_STATS64_INC((&ring->stats64), dropped);
@@ -2708,10 +2711,10 @@ static void bcmgenet_link_intr_enable(struct bcmgenet_priv *priv)
 	bcmgenet_intrl2_0_writel(priv, int0_enable, INTRL2_CPU_MASK_CLEAR);
 }
 
-/* Threshold in register units. Covers the alignment bytes and the frame, but
- * not the status block, which the hardware adds on top.
+/* Receive threshold in register units. Covers the alignment bytes and the
+ * frame, but not the status block, which the hardware adds on top.
  */
-static unsigned int bcmgenet_pkt_rdy_thld(unsigned int mtu)
+static unsigned int bcmgenet_rx_pkt_rdy_thld(unsigned int mtu)
 {
 	unsigned int len = GENET_RBUF_ALIGN + mtu + ETH_HLEN + VLAN_HLEN;
 
@@ -2726,24 +2729,20 @@ static unsigned int bcmgenet_pkt_rdy_thld(unsigned int mtu)
 static unsigned int bcmgenet_rx_buf_len(unsigned int mtu)
 {
 	return sizeof(struct status_64) +
-	       bcmgenet_pkt_rdy_thld(mtu) * ENET_THLD_UNIT;
+	       bcmgenet_rx_pkt_rdy_thld(mtu) * ENET_THLD_UNIT;
 }
 
 /* Program the MTU dependent registers. Call with the MAC disabled. */
 static void bcmgenet_set_mtu_regs(struct bcmgenet_priv *priv, unsigned int mtu)
 {
-	u32 thld = bcmgenet_pkt_rdy_thld(mtu);
-
-	priv->tx_csum_max_len = thld * ENET_THLD_UNIT;
 	bcmgenet_umac_writel(priv, ENET_MAX_FRAME_LEN(mtu), UMAC_MAX_FRAME_LEN);
 
 	/* GENET v1 maps other registers at these offsets */
 	if (GENET_IS_V1(priv))
 		return;
 
-	bcmgenet_rbuf_writel(priv, thld, RBUF_PKT_RDY_THLD);
-	bcmgenet_writel(thld, priv->base + priv->hw_params->tbuf_offset +
-			TBUF_PKT_RDY_THLD);
+	bcmgenet_rbuf_writel(priv, bcmgenet_rx_pkt_rdy_thld(mtu),
+			     RBUF_PKT_RDY_THLD);
 }
 
 static void init_umac(struct bcmgenet_priv *priv)
@@ -2768,6 +2767,15 @@ static void init_umac(struct bcmgenet_priv *priv)
 	reg = bcmgenet_tbuf_ctrl_get(priv);
 	reg |= TBUF_64B_EN;
 	bcmgenet_tbuf_ctrl_set(priv, reg);
+
+	/* A threshold the Tx FIFO can reach starts the transmitter before the
+	 * frame is complete, which locks it up on frames that end shortly
+	 * after. Keep it above the FIFO. GENET v1 maps other registers here.
+	 */
+	if (!GENET_IS_V1(priv))
+		bcmgenet_writel(ENET_THLD_MAX,
+				priv->base + priv->hw_params->tbuf_offset +
+				TBUF_PKT_RDY_THLD);
 
 	/* init rx registers, enable ip header optimization and RSB */
 	reg = bcmgenet_rbuf_readl(priv, RBUF_CTRL);
