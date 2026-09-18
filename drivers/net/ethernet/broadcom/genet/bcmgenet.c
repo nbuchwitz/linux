@@ -3898,6 +3898,7 @@ static int bcmgenet_change_mtu(struct net_device *dev, int new_mtu)
 	unsigned int old_mtu = dev->mtu;
 	int ret;
 
+	netdev_info(dev, "DBG Z enter %u->%u\n", old_mtu, new_mtu);
 	if (!netif_running(dev)) {
 		WRITE_ONCE(dev->mtu, new_mtu);
 		priv->rx_buf_len = bcmgenet_rx_buf_len(new_mtu);
@@ -3951,9 +3952,11 @@ static int bcmgenet_change_mtu(struct net_device *dev, int new_mtu)
 	if (bcmgenet_has_mdio_intr(priv))
 		bcmgenet_intrl2_0_writel(priv, UMAC_IRQ_MDIO_EVENT,
 					 INTRL2_CPU_MASK_CLEAR);
+	netdev_info(dev, "DBG G mdio intr done\n");
 
 	priv->datapath_up = true;
 	netif_device_attach(dev);
+	netdev_info(dev, "DBG H attach done, returning %d\n", ret);
 
 	return ret;
 }
