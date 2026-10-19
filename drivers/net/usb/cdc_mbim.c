@@ -223,6 +223,7 @@ static struct sk_buff *cdc_mbim_tx_fixup(struct usbnet *dev, struct sk_buff *skb
 	struct cdc_mbim_state *info = (void *)&dev->data;
 	struct cdc_ncm_ctx *ctx = info->ctx;
 	__le32 sign = cpu_to_le32(USB_CDC_MBIM_NDP16_IPS_SIGN);
+	unsigned long irqflags;
 	u16 tci = 0;
 	bool is_ip;
 	u8 *c;
@@ -289,9 +290,10 @@ static struct sk_buff *cdc_mbim_tx_fixup(struct usbnet *dev, struct sk_buff *skb
 		}
 	}
 
-	spin_lock_bh(&ctx->mtx);
+	/* IRQs are off and BHs on under netpoll, see cdc_ncm_tx_fixup() */
+	spin_lock_irqsave(&ctx->mtx, irqflags);
 	skb_out = cdc_ncm_fill_tx_frame(dev, skb, sign);
-	spin_unlock_bh(&ctx->mtx);
+	spin_unlock_irqrestore(&ctx->mtx, irqflags);
 	return skb_out;
 
 error:
