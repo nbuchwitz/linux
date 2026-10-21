@@ -228,6 +228,10 @@ static void *macb_rx_buffer(struct macb_queue *queue, unsigned int index)
 }
 
 /* I/O accessors */
+static int macb_ier_delay_us;
+module_param(macb_ier_delay_us, int, 0644);
+MODULE_PARM_DESC(macb_ier_delay_us, "check the TX ring before the IER write and delay the write by this many us");
+
 static u32 hw_readl_native(struct macb *bp, int offset)
 {
 	return __raw_readl(bp->regs + offset);
@@ -2005,7 +2009,17 @@ static int macb_tx_poll(struct napi_struct *napi, int budget)
 		    (unsigned int)(queue - bp->queues), work_done, budget);
 
 	if (work_done < budget && napi_complete_done(napi, work_done)) {
-		queue_writel(queue, IER, MACB_BIT(TCOMP));
+		bool pending;
+
+		if (macb_ier_delay_us) {
+			/* emulate the IER write landing late */
+			pending = macb_tx_complete_pending(queue);
+			udelay(macb_ier_delay_us);
+			queue_writel(queue, IER, MACB_BIT(TCOMP));
+		} else {
+			queue_writel(queue, IER, MACB_BIT(TCOMP));
+			pending = macb_tx_complete_pending(queue);
+		}
 
 		/* Packet completions only seem to propagate to raise
 		 * interrupts when interrupts are enabled at the time, so if
@@ -2017,7 +2031,7 @@ static int macb_tx_poll(struct napi_struct *napi, int budget)
 		 * actions if an interrupt is raised just after enabling them,
 		 * but this should be harmless.
 		 */
-		if (macb_tx_complete_pending(queue)) {
+		if (pending) {
 			queue_writel(queue, IDR, MACB_BIT(TCOMP));
 			if (bp->caps & MACB_CAPS_ISR_CLEAR_ON_WRITE)
 				queue_writel(queue, ISR, MACB_BIT(TCOMP));
