@@ -4714,6 +4714,20 @@ static void macb_tx_timeout(struct net_device *dev, unsigned int q)
 {
 	struct macb *bp = netdev_priv(dev);
 	struct macb_queue *queue = &bp->queues[q];
+	unsigned int head, tail;
+	u32 tbqp, tsr, ctrl;
+	unsigned long flags;
+
+	spin_lock_irqsave(&queue->tx_ptr_lock, flags);
+	head = queue->tx_head;
+	tail = queue->tx_tail;
+	ctrl = macb_tx_desc(queue, tail)->ctrl;
+	tbqp = queue_readl(queue, TBQP);
+	tsr = macb_readl(bp, TSR);
+	spin_unlock_irqrestore(&queue->tx_ptr_lock, flags);
+
+	netdev_warn(dev, "TX timeout q%u: head %u tail %u tbqp 0x%08x tsr 0x%08x tail ctrl 0x%08x\n",
+		    q, head, tail, tbqp, tsr, ctrl);
 
 	macb_tx_restart(queue);
 
