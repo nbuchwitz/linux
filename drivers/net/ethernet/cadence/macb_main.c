@@ -3355,13 +3355,15 @@ static int macb_close(struct net_device *dev)
 	unsigned long flags;
 	unsigned int q;
 
-	netif_tx_stop_all_queues(dev);
-
 	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
 		napi_disable(&queue->napi_rx);
 		napi_disable(&queue->napi_tx);
-		netdev_tx_reset_queue(netdev_get_tx_queue(dev, q));
 	}
+
+	netif_tx_disable(dev);
+
+	for (q = 0; q < bp->num_queues; ++q)
+		netdev_tx_reset_queue(netdev_get_tx_queue(dev, q));
 
 	cancel_delayed_work_sync(&bp->tx_lpi_work);
 
